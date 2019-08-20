@@ -34,6 +34,8 @@ $db = new \PDO('mysql:dbname=php_auth;host=127.0.0.1;charset=utf8mb4', 'root', '
 // $db = new \PDO('sqlite:../Databases/php_auth.sqlite');
 
 $auth = new \Delight\Auth\Auth($db);
+//!TODO: ADD TESTS FOR JWT-BASED AUTHENTICATION
+$authJWT = new \Delight\Auth\AuthJWT($db);
 
 $result = \processRequestData($auth);
 
