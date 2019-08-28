@@ -34,14 +34,6 @@
 		/** @var string the name of the cookie used for the 'remember me' feature */
 		private $rememberCookieName;
 
-		/**
-		 * @param PdoDatabase|PdoDsn|\PDO $databaseConnection    the database connection to operate on
-		 * @param string                  $ipAddress             the IP address that should be used instead of the default setting (if any), e.g. when behind a proxy
-		 * @param string|null             $dbTablePrefix         (optional) the prefix for the names of all database tables used by this component
-		 * @param bool|null               $throttling            (optional) whether throttling should be enabled (e.g. in production) or disabled (e.g. during development)
-		 * @param int|null                $sessionResyncInterval (optional) the interval in seconds after which to resynchronize the session data with its authoritative source in the database
-		 * @param string|null             $dbSchema              (optional) the schema name for all database tables used by this component
-		 */
 		public function __construct(
 			$databaseConnection,
 			$ipAddress = null,
@@ -67,17 +59,6 @@
 		/** Initializes the session and sets the correct configuration */
 		private function initSessionIfNecessary()
 		{
-			if (\session_status() === \PHP_SESSION_NONE) {
-				// use cookies to store session IDs
-				\ini_set('session.use_cookies', 1);
-				// use cookies only (do not send session IDs in URLs)
-				\ini_set('session.use_only_cookies', 1);
-				// do not send session IDs in URLs
-				\ini_set('session.use_trans_sid', 0);
-
-				// start the session (requests a cookie to be written on the client)
-				@Session::start();
-			}
 		}
 
 		/** Improves the application's security over HTTP(S) by setting specific headers */
@@ -103,110 +84,10 @@
 		/** Checks if there is a "remember me" directive set and handles the automatic login (if appropriate) */
 		private function processRememberDirective()
 		{
-			//!TODO: COOKIE CHECK NO LONGER NECESSARY, USE JWT
-			// if the user is not signed in yet
-			if (!$this->isLoggedIn()) {
-				// if there is currently no cookie for the 'remember me' feature
-				if (!isset($_COOKIE[$this->rememberCookieName])) {
-					// if an old cookie for that feature from versions v1.x.x to v6.x.x has been found
-					if (isset($_COOKIE['auth_remember'])) {
-						// use the value from that old cookie instead
-						$_COOKIE[$this->rememberCookieName] = $_COOKIE['auth_remember'];
-					}
-				}
-
-				// if a remember cookie is set
-				if (isset($_COOKIE[$this->rememberCookieName])) {
-					// assume the cookie and its contents to be invalid until proven otherwise
-					$valid = false;
-
-					// split the cookie's content into selector and token
-					$parts = \explode(self::COOKIE_CONTENT_SEPARATOR, $_COOKIE[$this->rememberCookieName], 2);
-
-					// if both selector and token were found
-					if (!empty($parts[0]) && !empty($parts[1])) {
-						try {
-							$rememberData = $this->db->selectRow(
-								'SELECT a.user, a.token, a.expires, b.email, b.username, b.status, b.roles_mask, b.force_logout FROM '.$this->makeTableName('users_remembered').' AS a JOIN '.$this->makeTableName('users').' AS b ON a.user = b.id WHERE a.selector = ?',
-								[$parts[0]]
-							);
-						} catch (Error $e) {
-							throw new DatabaseError($e->getMessage());
-						}
-
-						if (!empty($rememberData)) {
-							if ($rememberData['expires'] >= \time()) {
-								if (\password_verify($parts[1], $rememberData['token'])) {
-									// the cookie and its contents have now been proven to be valid
-									$valid = true;
-
-									$this->onLoginSuccessful($rememberData['user'], $rememberData['email'], $rememberData['username'],
-										$rememberData['status'], $rememberData['roles_mask'], $rememberData['force_logout'], true);
-								}
-							}
-						}
-					}
-
-					// if the cookie or its contents have been invalid
-					if (!$valid) {
-						// mark the cookie as such to prevent any further futile attempts
-						$this->setRememberCookie('', '', \time() + 60 * 60 * 24 * 365.25);
-					}
-				}
-			}
 		}
 
 		private function resyncSessionIfNecessary()
 		{
-			//!TODO: REWORK THIS
-			// if the user is signed in
-			if ($this->isLoggedIn()) {
-				// the following session field may not have been initialized for sessions that had already existed before the introduction of this feature
-				if (!isset($_SESSION[self::SESSION_FIELD_LAST_RESYNC])) {
-					$_SESSION[self::SESSION_FIELD_LAST_RESYNC] = 0;
-				}
-
-				// if it's time for resynchronization
-				if (($_SESSION[self::SESSION_FIELD_LAST_RESYNC] + $this->sessionResyncInterval) <= \time()) {
-					// fetch the authoritative data from the database again
-					try {
-						$authoritativeData = $this->db->selectRow(
-							'SELECT email, username, status, roles_mask, force_logout FROM '.$this->makeTableName('users').' WHERE id = ?',
-							[$this->getUserId()]
-						);
-					} catch (Error $e) {
-						throw new DatabaseError($e->getMessage());
-					}
-
-					// if the user's data has been found
-					if (!empty($authoritativeData)) {
-						// the following session field may not have been initialized for sessions that had already existed before the introduction of this feature
-						if (!isset($_SESSION[self::SESSION_FIELD_FORCE_LOGOUT])) {
-							$_SESSION[self::SESSION_FIELD_FORCE_LOGOUT] = 0;
-						}
-
-						// if the counter that keeps track of forced logouts has been incremented
-						if ($authoritativeData['force_logout'] > $_SESSION[self::SESSION_FIELD_FORCE_LOGOUT]) {
-							// the user must be signed out
-							$this->logOut();
-						} // if the counter that keeps track of forced logouts has remained unchanged
-						else {
-							// the session data needs to be updated
-							$_SESSION[self::SESSION_FIELD_EMAIL] = $authoritativeData['email'];
-							$_SESSION[self::SESSION_FIELD_USERNAME] = $authoritativeData['username'];
-							$_SESSION[self::SESSION_FIELD_STATUS] = (int)$authoritativeData['status'];
-							$_SESSION[self::SESSION_FIELD_ROLES] = (int)$authoritativeData['roles_mask'];
-
-							// remember that we've just performed the required resynchronization
-							$_SESSION[self::SESSION_FIELD_LAST_RESYNC] = \time();
-						}
-					} // if no data has been found for the user
-					else {
-						// their account may have been deleted so they should be signed out
-						$this->logOut();
-					}
-				}
-			}
 		}
 
 		/**
@@ -232,14 +113,6 @@
 		 */
 		public function register($email, $password, $username = null, callable $callback = null)
 		{
-			$this->throttle(['enumerateUsers', $this->getIpAddress()], 1, (60 * 60), 75);
-			$this->throttle(['createNewAccount', $this->getIpAddress()], 1, (60 * 60 * 12), 5, true);
-
-			$newUserId = $this->createUserInternal(false, $email, $password, $username, $callback);
-
-			$this->throttle(['createNewAccount', $this->getIpAddress()], 1, (60 * 60 * 12), 5, false);
-
-			return $newUserId;
 		}
 
 		/**
@@ -266,14 +139,6 @@
 		 */
 		public function registerWithUniqueUsername($email, $password, $username = null, callable $callback = null)
 		{
-			$this->throttle(['enumerateUsers', $this->getIpAddress()], 1, (60 * 60), 75);
-			$this->throttle(['createNewAccount', $this->getIpAddress()], 1, (60 * 60 * 12), 5, true);
-
-			$newUserId = $this->createUserInternal(true, $email, $password, $username, $callback);
-
-			$this->throttle(['createNewAccount', $this->getIpAddress()], 1, (60 * 60 * 12), 5, false);
-
-			return $newUserId;
 		}
 
 		/**
@@ -291,9 +156,6 @@
 		 */
 		public function login($email, $password, $rememberDuration = null, callable $onBeforeSuccess = null)
 		{
-			$this->throttle(['attemptToLogin', 'email', $email], 500, (60 * 60 * 24), null, true);
-
-			$this->authenticateUserInternal($password, $email, null, $rememberDuration, $onBeforeSuccess);
 		}
 
 		/**
@@ -314,9 +176,6 @@
 		 */
 		public function loginWithUsername($username, $password, $rememberDuration = null, callable $onBeforeSuccess = null)
 		{
-			$this->throttle(['attemptToLogin', 'username', $username], 500, (60 * 60 * 24), null, true);
-
-			$this->authenticateUserInternal($password, null, $username, $rememberDuration, $onBeforeSuccess);
 		}
 
 		/**
@@ -335,38 +194,6 @@
 		 */
 		public function reconfirmPassword($password)
 		{
-			if ($this->isLoggedIn()) {
-				try {
-					$password = self::validatePassword($password);
-				} catch (InvalidPasswordException $e) {
-					return false;
-				}
-
-				$this->throttle(['reconfirmPassword', $this->getIpAddress()], 3, (60 * 60), 4, true);
-
-				try {
-					$expectedHash = $this->db->selectValue(
-						'SELECT password FROM '.$this->makeTableName('users').' WHERE id = ?',
-						[$this->getUserId()]
-					);
-				} catch (Error $e) {
-					throw new DatabaseError($e->getMessage());
-				}
-
-				if (!empty($expectedHash)) {
-					$validated = \password_verify($password, $expectedHash);
-
-					if (!$validated) {
-						$this->throttle(['reconfirmPassword', $this->getIpAddress()], 3, (60 * 60), 4, false);
-					}
-
-					return $validated;
-				} else {
-					throw new NotLoggedInException();
-				}
-			} else {
-				throw new NotLoggedInException();
-			}
 		}
 
 		/**
@@ -375,32 +202,6 @@
 		 */
 		public function logOut()
 		{
-			//!TODO: REWORK THIS
-			// if the user has been signed in
-			if ($this->isLoggedIn()) {
-				// retrieve any locally existing remember directive
-				$rememberDirectiveSelector = $this->getRememberDirectiveSelector();
-
-				// if such a remember directive exists
-				if (isset($rememberDirectiveSelector)) {
-					// delete the local remember directive
-					$this->deleteRememberDirectiveForUserById(
-						$this->getUserId(),
-						$rememberDirectiveSelector
-					);
-				}
-
-				// remove all session variables maintained by this library
-				unset($_SESSION[self::SESSION_FIELD_LOGGED_IN]);
-				unset($_SESSION[self::SESSION_FIELD_USER_ID]);
-				unset($_SESSION[self::SESSION_FIELD_EMAIL]);
-				unset($_SESSION[self::SESSION_FIELD_USERNAME]);
-				unset($_SESSION[self::SESSION_FIELD_STATUS]);
-				unset($_SESSION[self::SESSION_FIELD_ROLES]);
-				unset($_SESSION[self::SESSION_FIELD_REMEMBERED]);
-				unset($_SESSION[self::SESSION_FIELD_LAST_RESYNC]);
-				unset($_SESSION[self::SESSION_FIELD_FORCE_LOGOUT]);
-			}
 		}
 
 		/**
@@ -410,36 +211,6 @@
 		 */
 		public function logOutEverywhereElse()
 		{
-			//!TODO: REWORK THIS
-			if (!$this->isLoggedIn()) {
-				throw new NotLoggedInException();
-			}
-
-			// determine the expiry date of any locally existing remember directive
-			$previousRememberDirectiveExpiry = $this->getRememberDirectiveExpiry();
-
-			// schedule a forced logout in all sessions
-			$this->forceLogoutForUserById($this->getUserId());
-
-			// the following session field may not have been initialized for sessions that had already existed before the introduction of this feature
-			if (!isset($_SESSION[self::SESSION_FIELD_FORCE_LOGOUT])) {
-				$_SESSION[self::SESSION_FIELD_FORCE_LOGOUT] = 0;
-			}
-
-			// ensure that we will simply skip or ignore the next forced logout (which we have just caused) in the current session
-			$_SESSION[self::SESSION_FIELD_FORCE_LOGOUT]++;
-
-			// re-generate the session ID to prevent session fixation attacks (requests a cookie to be written on the client)
-			Session::regenerate(true);
-
-			// if there had been an existing remember directive previously
-			if (isset($previousRememberDirectiveExpiry)) {
-				// restore the directive with the old expiry date but new credentials
-				$this->createRememberDirective(
-					$this->getUserId(),
-					$previousRememberDirectiveExpiry - \time()
-				);
-			}
 		}
 
 		/**
@@ -449,14 +220,6 @@
 		 */
 		public function logOutEverywhere()
 		{
-			if (!$this->isLoggedIn()) {
-				throw new NotLoggedInException();
-			}
-
-			// schedule a forced logout in all sessions
-			$this->forceLogoutForUserById($this->getUserId());
-			// and immediately apply the logout locally
-			$this->logOut();
 		}
 
 		/**
@@ -465,13 +228,6 @@
 		 */
 		public function destroySession()
 		{
-			//!TODO: REWORK THIS
-			// remove all session variables without exception
-			$_SESSION = [];
-			// delete the session cookie
-			$this->deleteSessionCookie();
-			// let PHP destroy the session
-			\session_destroy();
 		}
 
 		/**
@@ -482,33 +238,10 @@
 		 */
 		private function createRememberDirective($userId, $duration)
 		{
-			$selector = self::createRandomString(24);
-			$token = self::createRandomString(32);
-			$tokenHashed = \password_hash($token, \PASSWORD_DEFAULT);
-			$expires = \time() + ((int)$duration);
-
-			try {
-				$this->db->insert(
-					$this->makeTableNameComponents('users_remembered'),
-					[
-						'user' => $userId,
-						'selector' => $selector,
-						'token' => $tokenHashed,
-						'expires' => $expires
-					]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			$this->setRememberCookie($selector, $token, $expires);
 		}
 
 		protected function deleteRememberDirectiveForUserById($userId, $selector = null)
 		{
-			parent::deleteRememberDirectiveForUserById($userId, $selector);
-
-			$this->setRememberCookie(null, null, \time() - 3600);
 		}
 
 		/**
@@ -520,54 +253,10 @@
 		 */
 		private function setRememberCookie($selector, $token, $expires)
 		{
-			$params = \session_get_cookie_params();
-
-			if (isset($selector) && isset($token)) {
-				$content = $selector.self::COOKIE_CONTENT_SEPARATOR.$token;
-			} else {
-				$content = '';
-			}
-
-			// save the cookie with the selector and token (requests a cookie to be written on the client)
-			$cookie = new Cookie($this->rememberCookieName);
-			$cookie->setValue($content);
-			$cookie->setExpiryTime($expires);
-			$cookie->setPath($params['path']);
-			$cookie->setDomain($params['domain']);
-			$cookie->setHttpOnly($params['httponly']);
-			$cookie->setSecureOnly($params['secure']);
-			$result = $cookie->save();
-
-			if ($result === false) {
-				throw new HeadersAlreadySentError();
-			}
-
-			// if we've been deleting the cookie above
-			if (!isset($selector) || !isset($token)) {
-				// attempt to delete a potential old cookie from versions v1.x.x to v6.x.x as well (requests a cookie to be written on the client)
-				$cookie = new Cookie('auth_remember');
-				$cookie->setPath((!empty($params['path'])) ? $params['path'] : '/');
-				$cookie->setDomain($params['domain']);
-				$cookie->setHttpOnly($params['httponly']);
-				$cookie->setSecureOnly($params['secure']);
-				$cookie->delete();
-			}
 		}
 
 		protected function onLoginSuccessful($userId, $email, $username, $status, $roles, $forceLogout, $remembered)
 		{
-			// update the timestamp of the user's last login
-			try {
-				$this->db->update(
-					$this->makeTableNameComponents('users'),
-					['last_login' => \time()],
-					['id' => $userId]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			parent::onLoginSuccessful($userId, $email, $username, $status, $roles, $forceLogout, $remembered);
 		}
 
 		/**
@@ -576,19 +265,6 @@
 		 */
 		private function deleteSessionCookie()
 		{
-			$params = \session_get_cookie_params();
-
-			// ask for the session cookie to be deleted (requests a cookie to be written on the client)
-			$cookie = new Cookie(\session_name());
-			$cookie->setPath($params['path']);
-			$cookie->setDomain($params['domain']);
-			$cookie->setHttpOnly($params['httponly']);
-			$cookie->setSecureOnly($params['secure']);
-			$result = $cookie->delete();
-
-			if ($result === false) {
-				throw new HeadersAlreadySentError();
-			}
 		}
 
 		/**
@@ -605,87 +281,6 @@
 		 */
 		public function confirmEmail($selector, $token)
 		{
-			//!TODO: REWORK THIS
-			$this->throttle(['confirmEmail', $this->getIpAddress()], 5, (60 * 60), 10);
-			$this->throttle(['confirmEmail', 'selector', $selector], 3, (60 * 60), 10);
-			$this->throttle(['confirmEmail', 'token', $token], 3, (60 * 60), 10);
-
-			try {
-				$confirmationData = $this->db->selectRow(
-					'SELECT a.id, a.user_id, a.email AS new_email, a.token, a.expires, b.email AS old_email FROM '.$this->makeTableName('users_confirmations').' AS a JOIN '.$this->makeTableName('users').' AS b ON b.id = a.user_id WHERE a.selector = ?',
-					[$selector]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			if (!empty($confirmationData)) {
-				if (\password_verify($token, $confirmationData['token'])) {
-					if ($confirmationData['expires'] >= \time()) {
-						// invalidate any potential outstanding password reset requests
-						try {
-							$this->db->delete(
-								$this->makeTableNameComponents('users_resets'),
-								['user' => $confirmationData['user_id']]
-							);
-						} catch (Error $e) {
-							throw new DatabaseError($e->getMessage());
-						}
-
-						// mark the email address as verified (and possibly update it to the new address given)
-						try {
-							$this->db->update(
-								$this->makeTableNameComponents('users'),
-								[
-									'email' => $confirmationData['new_email'],
-									'verified' => 1
-								],
-								['id' => $confirmationData['user_id']]
-							);
-						} catch (IntegrityConstraintViolationException $e) {
-							throw new UserAlreadyExistsException();
-						} catch (Error $e) {
-							throw new DatabaseError($e->getMessage());
-						}
-
-						// if the user is currently signed in
-						if ($this->isLoggedIn()) {
-							// if the user has just confirmed an email address for their own account
-							if ($this->getUserId() === $confirmationData['user_id']) {
-								// immediately update the email address in the current session as well
-								$_SESSION[self::SESSION_FIELD_EMAIL] = $confirmationData['new_email'];
-							}
-						}
-
-						// consume the token just being used for confirmation
-						try {
-							$this->db->delete(
-								$this->makeTableNameComponents('users_confirmations'),
-								['id' => $confirmationData['id']]
-							);
-						} catch (Error $e) {
-							throw new DatabaseError($e->getMessage());
-						}
-
-						// if the email address has not been changed but simply been verified
-						if ($confirmationData['old_email'] === $confirmationData['new_email']) {
-							// the output should not contain any previous email address
-							$confirmationData['old_email'] = null;
-						}
-
-						return [
-							$confirmationData['old_email'],
-							$confirmationData['new_email']
-						];
-					} else {
-						throw new TokenExpiredException();
-					}
-				} else {
-					throw new InvalidSelectorTokenPairException();
-				}
-			} else {
-				throw new InvalidSelectorTokenPairException();
-			}
 		}
 
 		/**
@@ -704,27 +299,6 @@
 		 */
 		public function confirmEmailAndSignIn($selector, $token, $rememberDuration = null)
 		{
-			$emailBeforeAndAfter = $this->confirmEmail($selector, $token);
-
-			if (!$this->isLoggedIn()) {
-				if ($emailBeforeAndAfter[1] !== null) {
-					$emailBeforeAndAfter[1] = self::validateEmailAddress($emailBeforeAndAfter[1]);
-
-					$userData = $this->getUserDataByEmailAddress(
-						$emailBeforeAndAfter[1],
-						['id', 'email', 'username', 'status', 'roles_mask', 'force_logout']
-					);
-
-					$this->onLoginSuccessful($userData['id'], $userData['email'], $userData['username'], $userData['status'],
-						$userData['roles_mask'], $userData['force_logout'], true);
-
-					if ($rememberDuration !== null) {
-						$this->createRememberDirective($userData['id'], $rememberDuration);
-					}
-				}
-			}
-
-			return $emailBeforeAndAfter;
 		}
 
 		/**
@@ -738,11 +312,6 @@
 		 */
 		public function changePassword($oldPassword, $newPassword)
 		{
-			if ($this->reconfirmPassword($oldPassword)) {
-				$this->changePasswordWithoutOldPassword($newPassword);
-			} else {
-				throw new InvalidPasswordException();
-			}
 		}
 
 		/**
@@ -754,17 +323,6 @@
 		 */
 		public function changePasswordWithoutOldPassword($newPassword)
 		{
-			if ($this->isLoggedIn()) {
-				$newPassword = self::validatePassword($newPassword);
-				$this->updatePasswordInternal($this->getUserId(), $newPassword);
-
-				try {
-					$this->logOutEverywhereElse();
-				} catch (NotLoggedInException $ignored) {
-				}
-			} else {
-				throw new NotLoggedInException();
-			}
 		}
 
 		/**
@@ -786,45 +344,6 @@
 		 */
 		public function changeEmail($newEmail, callable $callback)
 		{
-			if ($this->isLoggedIn()) {
-				$newEmail = self::validateEmailAddress($newEmail);
-
-				$this->throttle(['enumerateUsers', $this->getIpAddress()], 1, (60 * 60), 75);
-
-				try {
-					$existingUsersWithNewEmail = $this->db->selectValue(
-						'SELECT COUNT(*) FROM '.$this->makeTableName('users').' WHERE email = ?',
-						[$newEmail]
-					);
-				} catch (Error $e) {
-					throw new DatabaseError($e->getMessage());
-				}
-
-				if ((int)$existingUsersWithNewEmail !== 0) {
-					throw new UserAlreadyExistsException();
-				}
-
-				try {
-					$verified = $this->db->selectValue(
-						'SELECT verified FROM '.$this->makeTableName('users').' WHERE id = ?',
-						[$this->getUserId()]
-					);
-				} catch (Error $e) {
-					throw new DatabaseError($e->getMessage());
-				}
-
-				// ensure that at least the current (old) email address has been verified before proceeding
-				if ((int)$verified !== 1) {
-					throw new EmailNotVerifiedException();
-				}
-
-				$this->throttle(['requestEmailChange', 'userId', $this->getUserId()], 1, (60 * 60 * 24));
-				$this->throttle(['requestEmailChange', $this->getIpAddress()], 1, (60 * 60 * 24), 3);
-
-				$this->createConfirmationRequest($this->getUserId(), $newEmail, $callback);
-			} else {
-				throw new NotLoggedInException();
-			}
 		}
 
 		/**
@@ -840,9 +359,6 @@
 		 */
 		public function resendConfirmationForEmail($email, callable $callback)
 		{
-			$this->throttle(['enumerateUsers', $this->getIpAddress()], 1, (60 * 60), 75);
-
-			$this->resendConfirmationForColumnValue('email', $email, $callback);
 		}
 
 		/**
@@ -858,7 +374,6 @@
 		 */
 		public function resendConfirmationForUserId($userId, callable $callback)
 		{
-			$this->resendConfirmationForColumnValue('user_id', $userId, $callback);
 		}
 
 		/**
@@ -877,27 +392,6 @@
 		 */
 		private function resendConfirmationForColumnValue($columnName, $columnValue, callable $callback)
 		{
-			try {
-				$latestAttempt = $this->db->selectRow(
-					'SELECT user_id, email FROM '.$this->makeTableName('users_confirmations').' WHERE '.$columnName.' = ? ORDER BY id DESC LIMIT 1 OFFSET 0',
-					[$columnValue]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			if ($latestAttempt === null) {
-				throw new ConfirmationRequestNotFound();
-			}
-
-			$this->throttle(['resendConfirmation', 'userId', $latestAttempt['user_id']], 1, (60 * 60 * 6));
-			$this->throttle(['resendConfirmation', $this->getIpAddress()], 4, (60 * 60 * 24 * 7), 2);
-
-			$this->createConfirmationRequest(
-				$latestAttempt['user_id'],
-				$latestAttempt['email'],
-				$callback
-			);
 		}
 
 		/**
@@ -918,49 +412,6 @@
 		 */
 		public function forgotPassword($email, callable $callback, $requestExpiresAfter = null, $maxOpenRequests = null)
 		{
-			$email = self::validateEmailAddress($email);
-
-			$this->throttle(['enumerateUsers', $this->getIpAddress()], 1, (60 * 60), 75);
-
-			if ($requestExpiresAfter === null) {
-				// use six hours as the default
-				$requestExpiresAfter = 60 * 60 * 6;
-			} else {
-				$requestExpiresAfter = (int)$requestExpiresAfter;
-			}
-
-			if ($maxOpenRequests === null) {
-				// use two requests per user as the default
-				$maxOpenRequests = 2;
-			} else {
-				$maxOpenRequests = (int)$maxOpenRequests;
-			}
-
-			$userData = $this->getUserDataByEmailAddress(
-				$email,
-				['id', 'verified', 'resettable']
-			);
-
-			// ensure that the account has been verified before initiating a password reset
-			if ((int)$userData['verified'] !== 1) {
-				throw new EmailNotVerifiedException();
-			}
-
-			// do not allow a password reset if the user has explicitly disabled this feature
-			if ((int)$userData['resettable'] !== 1) {
-				throw new ResetDisabledException();
-			}
-
-			$openRequests = (int)$this->getOpenPasswordResetRequests($userData['id']);
-
-			if ($openRequests < $maxOpenRequests) {
-				$this->throttle(['requestPasswordReset', $this->getIpAddress()], 4, (60 * 60 * 24 * 7), 2);
-				$this->throttle(['requestPasswordReset', 'user', $userData['id']], 4, (60 * 60 * 24 * 7), 2);
-
-				$this->createPasswordResetRequest($userData['id'], $requestExpiresAfter, $callback);
-			} else {
-				throw new TooManyRequestsException('', $requestExpiresAfter);
-			}
 		}
 
 		/**
@@ -986,85 +437,6 @@
 			$rememberDuration = null,
 			callable $onBeforeSuccess = null
 		) {
-			$this->throttle(['enumerateUsers', $this->getIpAddress()], 1, (60 * 60), 75);
-			$this->throttle(['attemptToLogin', $this->getIpAddress()], 4, (60 * 60), 5, true);
-
-			$columnsToFetch = ['id', 'email', 'password', 'verified', 'username', 'status', 'roles_mask', 'force_logout'];
-
-			if ($email !== null) {
-				$email = self::validateEmailAddress($email);
-
-				// attempt to look up the account information using the specified email address
-				$userData = $this->getUserDataByEmailAddress(
-					$email,
-					$columnsToFetch
-				);
-			} elseif ($username !== null) {
-				$username = \trim($username);
-
-				// attempt to look up the account information using the specified username
-				$userData = $this->getUserDataByUsername(
-					$username,
-					$columnsToFetch
-				);
-			} // if neither an email address nor a username has been provided
-			else {
-				// we can't do anything here because the method call has been invalid
-				throw new EmailOrUsernameRequiredError();
-			}
-
-			$password = self::validatePassword($password);
-
-			if (\password_verify($password, $userData['password'])) {
-				// if the password needs to be re-hashed to keep up with improving password cracking techniques
-				if (\password_needs_rehash($userData['password'], \PASSWORD_DEFAULT)) {
-					// create a new hash from the password and update it in the database
-					$this->updatePasswordInternal($userData['id'], $password);
-				}
-
-				if ((int)$userData['verified'] === 1) {
-					if (!isset($onBeforeSuccess) || (\is_callable($onBeforeSuccess) && $onBeforeSuccess($userData['id']) === true)) {
-						$this->onLoginSuccessful($userData['id'], $userData['email'], $userData['username'], $userData['status'],
-							$userData['roles_mask'], $userData['force_logout'], false);
-
-						// continue to support the old parameter format
-						if ($rememberDuration === true) {
-							$rememberDuration = 60 * 60 * 24 * 28;
-						} elseif ($rememberDuration === false) {
-							$rememberDuration = null;
-						}
-
-						if ($rememberDuration !== null) {
-							$this->createRememberDirective($userData['id'], $rememberDuration);
-						}
-
-						return;
-					} else {
-						$this->throttle(['attemptToLogin', $this->getIpAddress()], 4, (60 * 60), 5, false);
-
-						if (isset($email)) {
-							$this->throttle(['attemptToLogin', 'email', $email], 500, (60 * 60 * 24), null, false);
-						} elseif (isset($username)) {
-							$this->throttle(['attemptToLogin', 'username', $username], 500, (60 * 60 * 24), null, false);
-						}
-
-						throw new AttemptCancelledException();
-					}
-				} else {
-					throw new EmailNotVerifiedException();
-				}
-			} else {
-				$this->throttle(['attemptToLogin', $this->getIpAddress()], 4, (60 * 60), 5, false);
-
-				if (isset($email)) {
-					$this->throttle(['attemptToLogin', 'email', $email], 500, (60 * 60 * 24), null, false);
-				} elseif (isset($username)) {
-					$this->throttle(['attemptToLogin', 'username', $username], 500, (60 * 60 * 24), null, false);
-				}
-
-				// we cannot authenticate the user due to the password being wrong
-				throw new InvalidPasswordException();
-			}
 		}
 
 		/**
@@ -1078,21 +450,6 @@
 		 */
 		private function getUserDataByEmailAddress($email, array $requestedColumns)
 		{
-			try {
-				$projection = \implode(', ', $requestedColumns);
-				$userData = $this->db->selectRow(
-					'SELECT '.$projection.' FROM '.$this->makeTableName('users').' WHERE email = ?',
-					[$email]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			if (!empty($userData)) {
-				return $userData;
-			} else {
-				throw new InvalidEmailException();
-			}
 		}
 
 		/**
@@ -1103,23 +460,6 @@
 		 */
 		private function getOpenPasswordResetRequests($userId)
 		{
-			try {
-				$requests = $this->db->selectValue(
-					'SELECT COUNT(*) FROM '.$this->makeTableName('users_resets').' WHERE user = ? AND expires > ?',
-					[
-						$userId,
-						\time()
-					]
-				);
-
-				if (!empty($requests)) {
-					return $requests;
-				} else {
-					return 0;
-				}
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
 		}
 
 		/**
@@ -1135,30 +475,6 @@
 		 */
 		private function createPasswordResetRequest($userId, $expiresAfter, callable $callback)
 		{
-			$selector = self::createRandomString(20);
-			$token = self::createRandomString(20);
-			$tokenHashed = \password_hash($token, \PASSWORD_DEFAULT);
-			$expiresAt = \time() + $expiresAfter;
-
-			try {
-				$this->db->insert(
-					$this->makeTableNameComponents('users_resets'),
-					[
-						'user' => $userId,
-						'selector' => $selector,
-						'token' => $tokenHashed,
-						'expires' => $expiresAt
-					]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			if (\is_callable($callback)) {
-				$callback($selector, $token);
-			} else {
-				throw new MissingCallbackError();
-			}
 		}
 
 		/**
@@ -1176,47 +492,6 @@
 		 */
 		public function resetPassword($selector, $token, $newPassword)
 		{
-			$this->throttle(['resetPassword', $this->getIpAddress()], 5, (60 * 60), 10);
-			$this->throttle(['resetPassword', 'selector', $selector], 3, (60 * 60), 10);
-			$this->throttle(['resetPassword', 'token', $token], 3, (60 * 60), 10);
-
-			try {
-				$resetData = $this->db->selectRow(
-					'SELECT a.id, a.user, a.token, a.expires, b.resettable FROM '.$this->makeTableName('users_resets').' AS a JOIN '.$this->makeTableName('users').' AS b ON b.id = a.user WHERE a.selector = ?',
-					[$selector]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			if (!empty($resetData)) {
-				if ((int)$resetData['resettable'] === 1) {
-					if (\password_verify($token, $resetData['token'])) {
-						if ($resetData['expires'] >= \time()) {
-							$newPassword = self::validatePassword($newPassword);
-							$this->updatePasswordInternal($resetData['user'], $newPassword);
-							$this->forceLogoutForUserById($resetData['user']);
-
-							try {
-								$this->db->delete(
-									$this->makeTableNameComponents('users_resets'),
-									['id' => $resetData['id']]
-								);
-							} catch (Error $e) {
-								throw new DatabaseError($e->getMessage());
-							}
-						} else {
-							throw new TokenExpiredException();
-						}
-					} else {
-						throw new InvalidSelectorTokenPairException();
-					}
-				} else {
-					throw new ResetDisabledException();
-				}
-			} else {
-				throw new InvalidSelectorTokenPairException();
-			}
 		}
 
 		/**
@@ -1233,20 +508,6 @@
 		 */
 		public function canResetPasswordOrThrow($selector, $token)
 		{
-			try {
-				// pass an invalid password intentionally to force an expected error
-				$this->resetPassword($selector, $token, null);
-
-				// we should already be in one of the `catch` blocks now so this is not expected
-				throw new AuthError();
-			} // if the password is the only thing that's invalid
-			catch (InvalidPasswordException $ignored) {
-				// the password can be reset
-			} // if some other things failed (as well)
-			catch (AuthException $e) {
-				// re-throw the exception
-				throw $e;
-			}
 		}
 
 		/**
@@ -1259,13 +520,6 @@
 		 */
 		public function canResetPassword($selector, $token)
 		{
-			try {
-				$this->canResetPasswordOrThrow($selector, $token);
-
-				return true;
-			} catch (AuthException $e) {
-				return false;
-			}
 		}
 
 		/**
@@ -1276,25 +530,6 @@
 		 */
 		public function setPasswordResetEnabled($enabled)
 		{
-			$enabled = (bool)$enabled;
-
-			if ($this->isLoggedIn()) {
-				try {
-					$this->db->update(
-						$this->makeTableNameComponents('users'),
-						[
-							'resettable' => $enabled ? 1 : 0
-						],
-						[
-							'id' => $this->getUserId()
-						]
-					);
-				} catch (Error $e) {
-					throw new DatabaseError($e->getMessage());
-				}
-			} else {
-				throw new NotLoggedInException();
-			}
 		}
 
 		/**
@@ -1305,20 +540,6 @@
 		 */
 		public function isPasswordResetEnabled()
 		{
-			if ($this->isLoggedIn()) {
-				try {
-					$enabled = $this->db->selectValue(
-						'SELECT resettable FROM '.$this->makeTableName('users').' WHERE id = ?',
-						[$this->getUserId()]
-					);
-
-					return (int)$enabled === 1;
-				} catch (Error $e) {
-					throw new DatabaseError($e->getMessage());
-				}
-			} else {
-				throw new NotLoggedInException();
-			}
 		}
 
 		/**
@@ -1327,8 +548,6 @@
 		 */
 		public function isLoggedIn()
 		{
-			//!TODO: REWORK THIS
-			return isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_LOGGED_IN]) && $_SESSION[self::SESSION_FIELD_LOGGED_IN] === true;
 		}
 
 		/**
@@ -1337,7 +556,6 @@
 		 */
 		public function check()
 		{
-			return $this->isLoggedIn();
 		}
 
 		/**
@@ -1346,12 +564,6 @@
 		 */
 		public function getUserId()
 		{
-			//!TODO: REWORK THIS
-			if (isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_USER_ID])) {
-				return $_SESSION[self::SESSION_FIELD_USER_ID];
-			} else {
-				return null;
-			}
 		}
 
 		/**
@@ -1360,7 +572,6 @@
 		 */
 		public function id()
 		{
-			return $this->getUserId();
 		}
 
 		/**
@@ -1369,12 +580,6 @@
 		 */
 		public function getEmail()
 		{
-			//!TODO: REWORK THIS
-			if (isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_EMAIL])) {
-				return $_SESSION[self::SESSION_FIELD_EMAIL];
-			} else {
-				return null;
-			}
 		}
 
 		/**
@@ -1383,12 +588,6 @@
 		 */
 		public function getUsername()
 		{
-			//!TODO: REWORK THIS
-			if (isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_USERNAME])) {
-				return $_SESSION[self::SESSION_FIELD_USERNAME];
-			} else {
-				return null;
-			}
 		}
 
 		/**
@@ -1397,12 +596,6 @@
 		 */
 		public function getStatus()
 		{
-			//!TODO: REWORK THIS
-			if (isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_STATUS])) {
-				return $_SESSION[self::SESSION_FIELD_STATUS];
-			} else {
-				return null;
-			}
 		}
 
 		/**
@@ -1479,18 +672,6 @@
 		 */
 		public function hasRole($role)
 		{
-			//!TODO: REWORK THIS
-			if (empty($role) || !\is_numeric($role)) {
-				return false;
-			}
-
-			if (isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_ROLES])) {
-				$role = (int)$role;
-
-				return (((int)$_SESSION[self::SESSION_FIELD_ROLES]) & $role) === $role;
-			} else {
-				return false;
-			}
 		}
 
 		/**
@@ -1501,13 +682,6 @@
 		 */
 		public function hasAnyRole(...$roles)
 		{
-			foreach ($roles as $role) {
-				if ($this->hasRole($role)) {
-					return true;
-				}
-			}
-
-			return false;
 		}
 
 		/**
@@ -1518,13 +692,6 @@
 		 */
 		public function hasAllRoles(...$roles)
 		{
-			foreach ($roles as $role) {
-				if (!$this->hasRole($role)) {
-					return false;
-				}
-			}
-
-			return true;
 		}
 
 		/**
@@ -1533,11 +700,6 @@
 		 */
 		public function getRoles()
 		{
-			return \array_filter(
-				Role::getMap(),
-				[$this, 'hasRole'],
-				\ARRAY_FILTER_USE_KEY
-			);
 		}
 
 		/**
@@ -1546,12 +708,6 @@
 		 */
 		public function isRemembered()
 		{
-			//!TODO: REWORK THIS
-			if (isset($_SESSION) && isset($_SESSION[self::SESSION_FIELD_REMEMBERED])) {
-				return $_SESSION[self::SESSION_FIELD_REMEMBERED];
-			} else {
-				return null;
-			}
 		}
 
 		/**
@@ -1560,7 +716,6 @@
 		 */
 		public function getIpAddress()
 		{
-			return $this->ipAddress;
 		}
 
 		/**
@@ -1577,101 +732,6 @@
 		 */
 		public function throttle(array $criteria, $supply, $interval, $burstiness = null, $simulated = null, $cost = null)
 		{
-			if (!$this->throttling) {
-				return $supply;
-			}
-
-			// generate a unique key for the bucket (consisting of 44 or fewer ASCII characters)
-			$key = Base64::encodeUrlSafeWithoutPadding(
-				\hash(
-					'sha256',
-					\implode("\n", $criteria),
-					true
-				)
-			);
-
-			// validate the supplied parameters and set appropriate defaults where necessary
-			$burstiness = ($burstiness !== null) ? (int)$burstiness : 1;
-			$simulated = ($simulated !== null) ? (bool)$simulated : false;
-			$cost = ($cost !== null) ? (int)$cost : 1;
-
-			$now = \time();
-
-			// determine the volume of the bucket
-			$capacity = $burstiness * (int)$supply;
-
-			// calculate the rate at which the bucket is refilled (per second)
-			$bandwidthPerSecond = (int)$supply / (int)$interval;
-
-			try {
-				$bucket = $this->db->selectRow(
-					'SELECT tokens, replenished_at FROM '.$this->makeTableName('users_throttling').' WHERE bucket = ?',
-					[$key]
-				);
-			} catch (Error $e) {
-				throw new DatabaseError($e->getMessage());
-			}
-
-			if ($bucket === null) {
-				$bucket = [];
-			}
-
-			// initialize the number of tokens in the bucket
-			$bucket['tokens'] = isset($bucket['tokens']) ? (float)$bucket['tokens'] : (float)$capacity;
-			// initialize the last time that the bucket has been refilled (as a Unix timestamp in seconds)
-			$bucket['replenished_at'] = isset($bucket['replenished_at']) ? (int)$bucket['replenished_at'] : $now;
-
-			// replenish the bucket as appropriate
-			$secondsSinceLastReplenishment = \max(0, $now - $bucket['replenished_at']);
-			$tokensToAdd = $secondsSinceLastReplenishment * $bandwidthPerSecond;
-			$bucket['tokens'] = \min((float)$capacity, $bucket['tokens'] + $tokensToAdd);
-			$bucket['replenished_at'] = $now;
-
-			$accepted = $bucket['tokens'] >= $cost;
-
-			if (!$simulated) {
-				if ($accepted) {
-					// remove the requested number of tokens from the bucket
-					$bucket['tokens'] = \max(0, $bucket['tokens'] - $cost);
-				}
-
-				// set the earliest time after which the bucket *may* be deleted (as a Unix timestamp in seconds)
-				$bucket['expires_at'] = $now + \floor($capacity / $bandwidthPerSecond * 2);
-
-				// merge the updated bucket into the database
-				try {
-					$affected = $this->db->update(
-						$this->makeTableNameComponents('users_throttling'),
-						$bucket,
-						['bucket' => $key]
-					);
-				} catch (Error $e) {
-					throw new DatabaseError($e->getMessage());
-				}
-
-				if ($affected === 0) {
-					$bucket['bucket'] = $key;
-
-					try {
-						$this->db->insert(
-							$this->makeTableNameComponents('users_throttling'),
-							$bucket
-						);
-					} catch (IntegrityConstraintViolationException $ignored) {
-					} catch (Error $e) {
-						throw new DatabaseError($e->getMessage());
-					}
-				}
-			}
-
-			if ($accepted) {
-				return $bucket['tokens'];
-			} else {
-				$tokensMissing = $cost - $bucket['tokens'];
-				$estimatedWaitingTimeSeconds = \ceil($tokensMissing / $bandwidthPerSecond);
-
-				throw new TooManyRequestsException('', $estimatedWaitingTimeSeconds);
-			}
 		}
 
 		/**
@@ -1710,26 +770,6 @@
 		 */
 		public static function createCookieName($descriptor, $seed = null)
 		{
-			// use the supplied seed or the current UNIX time in seconds
-			$seed = ($seed !== null) ? $seed : \time();
-
-			foreach (self::COOKIE_PREFIXES as $cookiePrefix) {
-				// if the seed contains a certain cookie prefix
-				if (\strpos($seed, $cookiePrefix) === 0) {
-					// prepend the same prefix to the descriptor
-					$descriptor = $cookiePrefix.$descriptor;
-				}
-			}
-
-			// generate a unique token based on the name(space) of this library and on the seed
-			$token = Base64::encodeUrlSafeWithoutPadding(
-				\md5(
-					__NAMESPACE__."\n".$seed,
-					true
-				)
-			);
-
-			return $descriptor.'_'.$token;
 		}
 
 		/**
@@ -1739,10 +779,6 @@
 		 */
 		public static function createRememberCookieName($sessionName = null)
 		{
-			return self::createCookieName(
-				'remember',
-				($sessionName !== null) ? $sessionName : \session_name()
-			);
 		}
 
 		/**
@@ -1751,14 +787,6 @@
 		 */
 		private function getRememberDirectiveSelector()
 		{
-			//!TODO: EXPIRATION STORED IN JWT, COOKIE CHECK NO LONGER NECESSARY
-			if (isset($_COOKIE[$this->rememberCookieName])) {
-				$selectorAndToken = \explode(self::COOKIE_CONTENT_SEPARATOR, $_COOKIE[$this->rememberCookieName], 2);
-
-				return $selectorAndToken[0];
-			} else {
-				return null;
-			}
 		}
 
 		/**
@@ -1767,31 +795,5 @@
 		 */
 		private function getRememberDirectiveExpiry()
 		{
-			// if the user is currently signed in
-			if ($this->isLoggedIn()) {
-				// determine the selector of any currently existing remember directive
-				$existingSelector = $this->getRememberDirectiveSelector();
-
-				// if there is currently a remember directive whose selector we have just retrieved
-				if (isset($existingSelector)) {
-					// fetch the expiry date for the given selector
-					$existingExpiry = $this->db->selectValue(
-						'SELECT expires FROM '.$this->makeTableName('users_remembered').' WHERE selector = ? AND user = ?',
-						[
-							$existingSelector,
-							$this->getUserId()
-						]
-					);
-
-					// if an expiration date has been found
-					if (isset($existingExpiry)) {
-						// return the date
-						return (int)$existingExpiry;
-					}
-				}
-			}
-
-			return null;
 		}
-
 	}
